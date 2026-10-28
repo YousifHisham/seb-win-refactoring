@@ -66,8 +66,7 @@ jobs:
             Select-Object -First 1
           if ($LASTEXITCODE -ne 0 -or -not $testRunner) { throw 'VSTest runner was not found.' }
 
-          $adapter = Get-ChildItem 'packages\MSTest.TestAdapter.*' `
-            -Filter 'Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.dll' -Recurse |
+          $adapter = Get-ChildItem 'packages\MSTest.TestAdapter.*\buildTransitive\net462\MSTest.TestAdapter.dll' -File |
             Select-Object -First 1
           if (-not $adapter) { throw 'MSTest adapter was not restored.' }
 
