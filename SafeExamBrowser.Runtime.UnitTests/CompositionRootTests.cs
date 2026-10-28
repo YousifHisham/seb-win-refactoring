@@ -222,7 +222,6 @@ namespace SafeExamBrowser.Runtime.UnitTests
 				typeof(DisclaimerOperation),
 				typeof(RemoteSessionOperation),
 				typeof(SessionIntegrityOperation),
-				typeof(VirtualMachineOperation),
 				typeof(DisplayMonitorOperation),
 				typeof(ServiceOperation),
 				typeof(ClientTerminationOperation),

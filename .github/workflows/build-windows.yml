@@ -1,0 +1,136 @@
+name: Build Windows x64
+
+on:
+  push:
+    branches:
+      - codex/windows-no-vm
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '[17.0,18.0)'
+          msbuild-architecture: x64
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore packages
+        run: |
+          $ErrorActionPreference = 'Stop'
+          nuget restore SafeExamBrowser.sln -NonInteractive -Verbosity normal
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet restore failed.' }
+
+      - name: Build application, service, configuration tool, and tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $solutionDirectory = "$env:GITHUB_WORKSPACE\"
+          $projects = @(
+            'SafeExamBrowser.Runtime',
+            'SafeExamBrowser.Client',
+            'SafeExamBrowser.Service',
+            'SebWindowsConfig',
+            'SafeExamBrowser.Runtime.UnitTests'
+          )
+
+          # The Client post-build step copies its browser dependencies and output
+          # into the Runtime directory. Build it after Runtime and keep that folder intact.
+          foreach ($project in $projects) {
+            & msbuild "$project\$project.csproj" /m /nologo /verbosity:minimal `
+              /p:Configuration=Release /p:Platform=x64 /p:LangVersion=latest `
+              "/p:SolutionDir=$solutionDirectory"
+            if ($LASTEXITCODE -ne 0) { throw "Build failed: $project" }
+          }
+
+      - name: Run composition root regression tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $testRunner = & $vswhere -latest -products '*' -version '[17.0,18.0)' `
+            -find 'Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe' |
+            Select-Object -First 1
+          if ($LASTEXITCODE -ne 0 -or -not $testRunner) { throw 'VSTest runner was not found.' }
+
+          $adapter = Get-ChildItem 'packages\MSTest.TestAdapter.*' `
+            -Filter 'Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.dll' -Recurse |
+            Select-Object -First 1
+          if (-not $adapter) { throw 'MSTest adapter was not restored.' }
+
+          & $testRunner 'SafeExamBrowser.Runtime.UnitTests\bin\x64\Release\SafeExamBrowser.Runtime.UnitTests.dll' `
+            /Platform:x64 "/TestAdapterPath:$($adapter.DirectoryName)" `
+            '/TestCaseFilter:FullyQualifiedName~SafeExamBrowser.Runtime.UnitTests.CompositionRootTests' `
+            '/Logger:trx;LogFileName=composition-root.trx' '/ResultsDirectory:TestResults'
+          if ($LASTEXITCODE -ne 0) { throw 'Composition root regression tests failed.' }
+
+          [xml] $results = Get-Content 'TestResults\composition-root.trx'
+          if ([int] $results.TestRun.ResultSummary.Counters.executed -lt 1) {
+            throw 'No composition root regression tests were executed.'
+          }
+
+      - name: Assemble Windows artifact
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDirectory = 'artifacts\seb-windows-x64'
+          $outputs = @{
+            Application = 'SafeExamBrowser.Runtime\bin\x64\Release'
+            Service = 'SafeExamBrowser.Service\bin\x64\Release'
+            Configuration = 'SebWindowsConfig\bin\x64\Release'
+          }
+
+          foreach ($entry in $outputs.GetEnumerator()) {
+            $destination = Join-Path $artifactDirectory $entry.Key
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            Copy-Item "$($entry.Value)\*" $destination -Recurse -Force
+          }
+
+          foreach ($executable in @(
+            'Application\SafeExamBrowser.exe',
+            'Application\SafeExamBrowser.Client.exe',
+            'Service\SafeExamBrowser.Service.exe',
+            'Configuration\SEBConfigTool.exe'
+          )) {
+            if (-not (Test-Path (Join-Path $artifactDirectory $executable))) {
+              throw "Missing artifact executable: $executable"
+            }
+          }
+
+          Copy-Item 'LICENSE.txt' $artifactDirectory
+          Copy-Item 'docs\windows-build.md' (Join-Path $artifactDirectory 'README.md')
+          @(
+            "Repository: $env:GITHUB_REPOSITORY",
+            "Commit: $env:GITHUB_SHA",
+            "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            'Configuration: Release x64'
+          ) | Set-Content (Join-Path $artifactDirectory 'BUILD.txt')
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: seb-windows-x64-${{ github.run_number }}
+          path: artifacts/seb-windows-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-results-${{ github.run_number }}
+          path: TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 14
