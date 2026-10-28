@@ -60,17 +60,18 @@ jobs:
       - name: Run composition root regression tests
         run: |
           $ErrorActionPreference = 'Stop'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $testRunner = & $vswhere -latest -products '*' -version '[17.0,18.0)' `
-            -find 'Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe' |
+          nuget install Microsoft.TestPlatform -Version 18.8.1 -OutputDirectory .build-tools -ExcludeVersion -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw 'Test runner installation failed.' }
+          $testRunner = Get-ChildItem '.build-tools\Microsoft.TestPlatform' -Filter 'vstest.console.exe' -Recurse -File |
+            Where-Object { $_.FullName -match '\\net462\\' } |
             Select-Object -First 1
-          if ($LASTEXITCODE -ne 0 -or -not $testRunner) { throw 'VSTest runner was not found.' }
+          if (-not $testRunner) { throw 'The .NET Framework VSTest runner was not found.' }
 
           $adapter = Get-ChildItem 'packages\MSTest.TestAdapter.*\buildTransitive\net462\MSTest.TestAdapter.dll' -File |
             Select-Object -First 1
           if (-not $adapter) { throw 'MSTest adapter was not restored.' }
 
-          & $testRunner 'SafeExamBrowser.Runtime.UnitTests\bin\x64\Release\SafeExamBrowser.Runtime.UnitTests.dll' `
+          & $testRunner.FullName 'SafeExamBrowser.Runtime.UnitTests\bin\x64\Release\SafeExamBrowser.Runtime.UnitTests.dll' `
             /Platform:x64 "/TestAdapterPath:$($adapter.DirectoryName)" `
             '/TestCaseFilter:FullyQualifiedName~SafeExamBrowser.Runtime.UnitTests.CompositionRootTests' `
             '/Logger:trx;LogFileName=composition-root.trx' '/ResultsDirectory:TestResults'
